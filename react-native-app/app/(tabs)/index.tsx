@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  Animated,
   Dimensions,
   FlatList,
   Modal,
@@ -14,6 +15,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View
 } from 'react-native';
 
@@ -26,6 +28,13 @@ export default function App() {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const videoRef = useRef(null);
+
+  // ダブルタップ関連の状態
+  const [lastTapTime, setLastTapTime] = useState(0);
+  const [showLeftSeek, setShowLeftSeek] = useState(false);
+  const [showRightSeek, setShowRightSeek] = useState(false);
+  const leftSeekOpacity = useRef(new Animated.Value(0)).current;
+  const rightSeekOpacity = useRef(new Animated.Value(0)).current;
 
   // 保存された動画リストを読み込む
   useEffect(() => {
@@ -140,34 +149,116 @@ export default function App() {
   };
 
   const deleteVideo = async (videoId) => {
-    Alert.alert(
-      '削除確認',
-      'この動画を削除しますか？',
-      [
-        { text: 'キャンセル', style: 'cancel' },
-        {
-          text: '削除',
-          style: 'destructive',
-          onPress: async () => {
-            const videoToDelete = videos.find(v => v.id === videoId);
-            if (videoToDelete) {
-              try {
-                // ネイティブ環境でのみファイル削除を実行
-                if (Platform.OS !== 'web' && FileSystem.deleteAsync) {
-                  await FileSystem.deleteAsync(videoToDelete.uri, { idempotent: true });
-                }
-                
-                const updatedVideos = videos.filter(v => v.id !== videoId);
-                setVideos(updatedVideos);
-                await saveVideos(updatedVideos);
-              } catch (error) {
-                console.error('動画の削除エラー:', error);
-              }
-            }
+    const confirmDelete = () => {
+      try {
+        const videoToDelete = videos.find(v => v.id === videoId);
+        if (videoToDelete) {
+          // ネイティブ環境でのみファイル削除を実行
+          if (Platform.OS !== 'web' && FileSystem.deleteAsync) {
+            FileSystem.deleteAsync(videoToDelete.uri, { idempotent: true }).catch(e => 
+              console.log('ファイル削除エラー（無視可）:', e)
+            );
+          }
+          
+          // 動画リストから削除
+          const updatedVideos = videos.filter(v => v.id !== videoId);
+          setVideos(updatedVideos);
+          
+          // ストレージを更新
+          if (Platform.OS === 'web') {
+            localStorage.setItem('videoList', JSON.stringify(updatedVideos));
+            console.log('Video deleted:', videoId);
+            console.log('Updated list:', updatedVideos);
+          } else {
+            AsyncStorage.setItem('videoList', JSON.stringify(updatedVideos));
+          }
+          
+          // 選択中の動画が削除された場合はモーダルを閉じる
+          if (selectedVideo && selectedVideo.id === videoId) {
+            setSelectedVideo(null);
+            setIsPlaying(false);
+          }
+        }
+      } catch (error) {
+        console.error('動画の削除エラー:', error);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      // Web環境では標準のconfirmを使用
+      if (window.confirm('この動画を削除しますか？')) {
+        confirmDelete();
+      }
+    } else {
+      // ネイティブ環境ではAlert.alertを使用
+      Alert.alert(
+        '削除確認',
+        'この動画を削除しますか？',
+        [
+          { text: 'キャンセル', style: 'cancel' },
+          {
+            text: '削除',
+            style: 'destructive',
+            onPress: confirmDelete,
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
+  };
+
+  const clearAllVideos = async () => {
+    const confirmClear = () => {
+      try {
+        // ネイティブ環境での動画ファイル削除
+        if (Platform.OS !== 'web') {
+          videos.forEach(video => {
+            FileSystem.deleteAsync(video.uri, { idempotent: true }).catch(e =>
+              console.log('ファイル削除エラー（無視可）:', e)
+            );
+          });
+        }
+        
+        // 状態をクリア
+        setVideos([]);
+        
+        // 選択中の動画があればモーダルを閉じる
+        if (selectedVideo) {
+          setSelectedVideo(null);
+          setIsPlaying(false);
+        }
+        
+        // ストレージをクリア
+        if (Platform.OS === 'web') {
+          localStorage.removeItem('videoList');
+          console.log('All videos cleared from localStorage');
+        } else {
+          AsyncStorage.removeItem('videoList');
+        }
+      } catch (error) {
+        console.error('全削除エラー:', error);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      // Web環境では標準のconfirmを使用
+      if (window.confirm('すべての動画を削除しますか？この操作は取り消せません。')) {
+        confirmClear();
+      }
+    } else {
+      // ネイティブ環境ではAlert.alertを使用
+      Alert.alert(
+        '全削除確認',
+        'すべての動画を削除しますか？この操作は取り消せません。',
+        [
+          { text: 'キャンセル', style: 'cancel' },
+          {
+            text: '全て削除',
+            style: 'destructive',
+            onPress: confirmClear,
+          },
+        ]
+      );
+    }
   };
 
   const playPauseVideo = async () => {
@@ -212,30 +303,89 @@ export default function App() {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  // ダブルタップハンドラー
+  const handleTap = async (event) => {
+    const currentTime = Date.now();
+    const tapX = event.nativeEvent.locationX;
+    const isLeftSide = tapX < screenWidth / 2;
+
+    if (currentTime - lastTapTime < 300) { // ダブルタップと判定（300ms以内）
+      if (isLeftSide) {
+        // 左側：10秒戻る
+        await rewind();
+        showSeekAnimation('left');
+      } else {
+        // 右側：10秒進む
+        await forward();
+        showSeekAnimation('right');
+      }
+    }
+    setLastTapTime(currentTime);
+  };
+
+  // シークアニメーションを表示
+  const showSeekAnimation = (side) => {
+    const opacity = side === 'left' ? leftSeekOpacity : rightSeekOpacity;
+    const setSide = side === 'left' ? setShowLeftSeek : setShowRightSeek;
+
+    setSide(true);
+    Animated.sequence([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(opacity, {
+        toValue: 0,
+        duration: 200,
+        delay: 400,
+        useNativeDriver: true,
+      }),
+    ]).start(() => setSide(false));
+  };
+
   const renderVideoItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.videoItem}
-      onPress={() => setSelectedVideo(item)}
-      onLongPress={() => deleteVideo(item.id)}
-    >
-      <Ionicons name="videocam" size={40} color="#007AFF" />
-      <Text style={styles.videoName} numberOfLines={1}>
-        {item.name}
-      </Text>
-      <Text style={styles.videoDuration}>
-        {formatTime(item.duration * 1000)}
-      </Text>
-    </TouchableOpacity>
+    <View style={styles.videoItemContainer}>
+      <TouchableOpacity
+        style={styles.videoItem}
+        onPress={() => setSelectedVideo(item)}
+        onLongPress={() => deleteVideo(item.id)}
+      >
+        <Ionicons name="videocam" size={40} color="#007AFF" />
+        <View style={styles.videoInfo}>
+          <Text style={styles.videoName} numberOfLines={1}>
+            {item.name}
+          </Text>
+          <Text style={styles.videoDuration}>
+            {formatTime(item.duration * 1000)}
+          </Text>
+        </View>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.deleteButton}
+        onPress={() => deleteVideo(item.id)}
+      >
+        <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+      </TouchableOpacity>
+    </View>
   );
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>動画プレイヤー</Text>
-        <TouchableOpacity style={styles.uploadButton} onPress={pickVideo}>
-          <Ionicons name="add-circle" size={30} color="#007AFF" />
-          <Text style={styles.uploadText}>動画を追加</Text>
-        </TouchableOpacity>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity style={styles.uploadButton} onPress={pickVideo}>
+            <Ionicons name="add-circle" size={30} color="#007AFF" />
+            <Text style={styles.uploadText}>動画を追加</Text>
+          </TouchableOpacity>
+          {videos.length > 0 && (
+            <TouchableOpacity style={styles.clearButton} onPress={clearAllVideos}>
+              <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+              <Text style={styles.clearText}>全削除</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       <FlatList
@@ -270,21 +420,53 @@ export default function App() {
               <Ionicons name="close-circle" size={30} color="#fff" />
             </TouchableOpacity>
 
-            <Video
-              ref={videoRef}
-              style={styles.video}
-              source={{ uri: selectedVideo.uri }}
-              useNativeControls={false}
-              resizeMode={ResizeMode.CONTAIN}
-              isLooping
-              onPlaybackStatusUpdate={(status) => {
-                if (status.isLoaded) {
-                  setPosition(status.positionMillis || 0);
-                  setDuration(status.durationMillis || 0);
-                  setIsPlaying(status.isPlaying || false);
-                }
-              }}
-            />
+            <TouchableWithoutFeedback onPress={handleTap}>
+              <View style={styles.videoContainer}>
+                <Video
+                  ref={videoRef}
+                  style={styles.video}
+                  source={{ uri: selectedVideo.uri }}
+                  useNativeControls={false}
+                  resizeMode={ResizeMode.CONTAIN}
+                  isLooping
+                  onPlaybackStatusUpdate={(status) => {
+                    if (status.isLoaded) {
+                      setPosition(status.positionMillis || 0);
+                      setDuration(status.durationMillis || 0);
+                      setIsPlaying(status.isPlaying || false);
+                    }
+                  }}
+                />
+
+                {/* 左側シークインジケーター */}
+                {showLeftSeek && (
+                  <Animated.View 
+                    style={[
+                      styles.seekIndicator, 
+                      styles.leftSeekIndicator,
+                      { opacity: leftSeekOpacity }
+                    ]}
+                  >
+                    <Ionicons name="play-back" size={40} color="#fff" />
+                    <Text style={styles.seekText}>10秒</Text>
+                  </Animated.View>
+                )}
+
+                {/* 右側シークインジケーター */}
+                {showRightSeek && (
+                  <Animated.View 
+                    style={[
+                      styles.seekIndicator, 
+                      styles.rightSeekIndicator,
+                      { opacity: rightSeekOpacity }
+                    ]}
+                  >
+                    <Ionicons name="play-forward" size={40} color="#fff" />
+                    <Text style={styles.seekText}>10秒</Text>
+                  </Animated.View>
+                )}
+              </View>
+            </TouchableWithoutFeedback>
 
             <View style={styles.controls}>
               <View style={styles.sliderContainer}>
@@ -344,6 +526,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 10,
   },
+  headerButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   uploadButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -353,13 +540,28 @@ const styles = StyleSheet.create({
     color: '#007AFF',
     fontSize: 16,
   },
+  clearButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 20,
+  },
+  clearText: {
+    marginLeft: 5,
+    color: '#FF3B30',
+    fontSize: 16,
+  },
   videoList: {
     padding: 10,
   },
+  videoItemContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 5,
+  },
   videoItem: {
+    flex: 1,
     backgroundColor: '#fff',
     padding: 15,
-    marginVertical: 5,
     borderRadius: 10,
     flexDirection: 'row',
     alignItems: 'center',
@@ -369,14 +571,28 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  videoName: {
+  videoInfo: {
     flex: 1,
     marginLeft: 15,
+  },
+  videoName: {
     fontSize: 16,
+    marginBottom: 4,
   },
   videoDuration: {
     color: '#666',
     fontSize: 14,
+  },
+  deleteButton: {
+    backgroundColor: '#fff',
+    padding: 10,
+    marginLeft: 10,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   emptyText: {
     textAlign: 'center',
@@ -395,9 +611,35 @@ const styles = StyleSheet.create({
     right: 20,
     zIndex: 1,
   },
-  video: {
+  videoContainer: {
     width: screenWidth,
     height: screenWidth * 0.6,
+    position: 'relative',
+  },
+  video: {
+    width: '100%',
+    height: '100%',
+  },
+  seekIndicator: {
+    position: 'absolute',
+    top: '50%',
+    marginTop: -60,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 50,
+    padding: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  leftSeekIndicator: {
+    left: 40,
+  },
+  rightSeekIndicator: {
+    right: 40,
+  },
+  seekText: {
+    color: '#fff',
+    fontSize: 16,
+    marginTop: 5,
   },
   controls: {
     position: 'absolute',
