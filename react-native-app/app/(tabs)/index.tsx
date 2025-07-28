@@ -34,9 +34,18 @@ export default function App() {
 
   const loadVideos = async () => {
     try {
-      const savedVideos = await AsyncStorage.getItem('videoList');
-      if (savedVideos) {
-        setVideos(JSON.parse(savedVideos));
+      if (Platform.OS === 'web') {
+        // Web環境ではlocalStorageを使用
+        const savedVideos = localStorage.getItem('videoList');
+        if (savedVideos) {
+          setVideos(JSON.parse(savedVideos));
+        }
+      } else {
+        // ネイティブ環境ではAsyncStorageを使用
+        const savedVideos = await AsyncStorage.getItem('videoList');
+        if (savedVideos) {
+          setVideos(JSON.parse(savedVideos));
+        }
       }
     } catch (error) {
       console.error('動画リストの読み込みエラー:', error);
@@ -45,7 +54,11 @@ export default function App() {
 
   const saveVideos = async (videoList) => {
     try {
-      await AsyncStorage.setItem('videoList', JSON.stringify(videoList));
+      if (Platform.OS === 'web') {
+        localStorage.setItem('videoList', JSON.stringify(videoList));
+      } else {
+        await AsyncStorage.setItem('videoList', JSON.stringify(videoList));
+      }
     } catch (error) {
       console.error('動画リストの保存エラー:', error);
     }
@@ -72,26 +85,54 @@ export default function App() {
 
   const saveVideo = async (asset) => {
     try {
-      const fileName = asset.uri.split('/').pop();
-      const newPath = FileSystem.documentDirectory + fileName;
+      let videoUri = asset.uri;
+      let fileName = asset.uri.split('/').pop();
       
-      await FileSystem.copyAsync({
-        from: asset.uri,
-        to: newPath,
-      });
+      // Web環境の場合は別処理
+      if (Platform.OS === 'web') {
+        // Web環境では直接URIを使用
+        const newVideo = {
+          id: Date.now().toString(),
+          uri: asset.uri,
+          name: fileName || `video_${Date.now()}.mp4`,
+          duration: asset.duration || 0,
+          // Web用にblob URLを保存
+          webUri: asset.uri,
+        };
 
-      const newVideo = {
-        id: Date.now().toString(),
-        uri: newPath,
-        name: fileName,
-        duration: asset.duration || 0,
-      };
+        const updatedVideos = [...videos, newVideo];
+        setVideos(updatedVideos);
+        
+        // Web環境でもlocalStorageを使用して永続化
+        try {
+          localStorage.setItem('videoList', JSON.stringify(updatedVideos));
+        } catch (e) {
+          console.log('LocalStorage not available');
+        }
+        
+        Alert.alert('成功', '動画が追加されました。');
+      } else {
+        // ネイティブ環境（iOS/Android）
+        const newPath = FileSystem.documentDirectory + fileName;
+        
+        await FileSystem.copyAsync({
+          from: asset.uri,
+          to: newPath,
+        });
 
-      const updatedVideos = [...videos, newVideo];
-      setVideos(updatedVideos);
-      await saveVideos(updatedVideos);
-      
-      Alert.alert('成功', '動画が保存されました。');
+        const newVideo = {
+          id: Date.now().toString(),
+          uri: newPath,
+          name: fileName,
+          duration: asset.duration || 0,
+        };
+
+        const updatedVideos = [...videos, newVideo];
+        setVideos(updatedVideos);
+        await saveVideos(updatedVideos);
+        
+        Alert.alert('成功', '動画が保存されました。');
+      }
     } catch (error) {
       console.error('動画の保存エラー:', error);
       Alert.alert('エラー', '動画の保存に失敗しました。');
@@ -111,7 +152,11 @@ export default function App() {
             const videoToDelete = videos.find(v => v.id === videoId);
             if (videoToDelete) {
               try {
-                await FileSystem.deleteAsync(videoToDelete.uri, { idempotent: true });
+                // ネイティブ環境でのみファイル削除を実行
+                if (Platform.OS !== 'web' && FileSystem.deleteAsync) {
+                  await FileSystem.deleteAsync(videoToDelete.uri, { idempotent: true });
+                }
+                
                 const updatedVideos = videos.filter(v => v.id !== videoId);
                 setVideos(updatedVideos);
                 await saveVideos(updatedVideos);
