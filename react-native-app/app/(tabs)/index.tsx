@@ -18,6 +18,7 @@ import {
   TouchableWithoutFeedback,
   View
 } from 'react-native';
+import { saveVideos } from '../../util/saveVideos';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -58,18 +59,6 @@ export default function App() {
       }
     } catch (error) {
       console.error('動画リストの読み込みエラー:', error);
-    }
-  };
-
-  const saveVideos = async (videoList) => {
-    try {
-      if (Platform.OS === 'web') {
-        localStorage.setItem('videoList', JSON.stringify(videoList));
-      } else {
-        await AsyncStorage.setItem('videoList', JSON.stringify(videoList));
-      }
-    } catch (error) {
-      console.error('動画リストの保存エラー:', error);
     }
   };
 
