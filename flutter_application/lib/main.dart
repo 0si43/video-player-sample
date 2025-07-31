@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:io';
 import 'dart:typed_data';
 
 void main() {
@@ -215,9 +216,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         );
       } else if (widget.videoData.url != null) {
         // モバイル環境：ファイルパスからの再生
-        _controller = VideoPlayerController.networkUrl(
-          Uri.parse(widget.videoData.url!),
-        );
+        _controller = VideoPlayerController.file(File(widget.videoData.url!));
       }
 
       if (_controller != null) {
