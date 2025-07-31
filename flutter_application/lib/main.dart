@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:convert';
 
 void main() {
   runApp(MyApp());
@@ -47,12 +48,11 @@ class _VideoListScreenState extends State<VideoListScreen> {
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.video,
       allowMultiple: false,
-      withData: kIsWeb, // Web環境ではデータを読み込む
+      withData: kIsWeb,
     );
 
     if (result != null) {
       if (kIsWeb) {
-        // Web環境の処理
         final file = result.files.first;
         if (file.bytes != null) {
           setState(() {
@@ -63,7 +63,6 @@ class _VideoListScreenState extends State<VideoListScreen> {
           });
         }
       } else {
-        // モバイル環境の処理
         final file = result.files.first;
         if (file.path != null) {
           setState(() {
@@ -192,6 +191,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   VideoPlayerController? _controller;
   bool _isPlaying = false;
   bool _isInitialized = false;
+  bool _showControls = true;
+  bool _showSeekIndicator = false;
+  String _seekIndicatorText = '';
 
   @override
   void initState() {
@@ -202,11 +204,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   Future<void> _initializeVideo() async {
     try {
       if (kIsWeb && widget.videoData.bytes != null) {
-        // Web環境：メモリからの再生
-        _controller = VideoPlayerController.networkUrl(
-          Uri.dataFromBytes(widget.videoData.bytes!),
-        );
-      } else if (widget.videoData.url != null) {
+        // Web環境：Base64エンコードしてdata URIを作成
+        final base64String = base64Encode(widget.videoData.bytes!);
+        final mimeType = _getMimeType(widget.videoData.name);
+        final dataUri = Uri.parse('data:$mimeType;base64,$base64String');
+        
+        _controller = VideoPlayerController.networkUrl(dataUri);
+      } else if (!kIsWeb && widget.videoData.url != null) {
         // モバイル環境：ファイルパスからの再生
         _controller = VideoPlayerController.file(File(widget.videoData.url!));
       }
@@ -228,10 +232,27 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       }
     } catch (e) {
       print('動画の初期化エラー: $e');
-      // エラーハンドリング
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('動画の読み込みに失敗しました')),
       );
+    }
+  }
+
+  String _getMimeType(String fileName) {
+    final extension = fileName.split('.').last.toLowerCase();
+    switch (extension) {
+      case 'mp4':
+        return 'video/mp4';
+      case 'mov':
+        return 'video/quicktime';
+      case 'avi':
+        return 'video/x-msvideo';
+      case 'webm':
+        return 'video/webm';
+      case 'm4v':
+        return 'video/x-m4v';
+      default:
+        return 'video/mp4';
     }
   }
 
@@ -253,6 +274,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       final currentPosition = _controller!.value.position;
       final newPosition = currentPosition - Duration(seconds: 10);
       _controller!.seekTo(newPosition >= Duration.zero ? newPosition : Duration.zero);
+      _showSeekFeedback('-10秒');
     }
   }
 
@@ -262,7 +284,23 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       final duration = _controller!.value.duration;
       final newPosition = currentPosition + Duration(seconds: 10);
       _controller!.seekTo(newPosition <= duration ? newPosition : duration);
+      _showSeekFeedback('+10秒');
     }
+  }
+
+  void _showSeekFeedback(String text) {
+    setState(() {
+      _seekIndicatorText = text;
+      _showSeekIndicator = true;
+    });
+    
+    Future.delayed(Duration(milliseconds: 500), () {
+      if (mounted) {
+        setState(() {
+          _showSeekIndicator = false;
+        });
+      }
+    });
   }
 
   @override
@@ -279,70 +317,142 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             ? Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  AspectRatio(
-                    aspectRatio: _controller!.value.aspectRatio,
-                    child: VideoPlayer(_controller!),
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      AspectRatio(
+                        aspectRatio: _controller!.value.aspectRatio,
+                        child: Stack(
+                          children: [
+                            VideoPlayer(_controller!),
+                            // タップ領域を追加
+                            Row(
+                              children: [
+                                // 左側タップエリア（巻き戻し）
+                                Expanded(
+                                  child: GestureDetector(
+                                    onDoubleTap: _rewind,
+                                    behavior: HitTestBehavior.translucent,
+                                    child: Container(
+                                      color: Colors.transparent,
+                                    ),
+                                  ),
+                                ),
+                                // 中央タップエリア（再生/一時停止）
+                                Expanded(
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      setState(() {
+                                        _isPlaying ? _controller!.pause() : _controller!.play();
+                                      });
+                                    },
+                                    behavior: HitTestBehavior.translucent,
+                                    child: Container(
+                                      color: Colors.transparent,
+                                    ),
+                                  ),
+                                ),
+                                // 右側タップエリア（早送り）
+                                Expanded(
+                                  child: GestureDetector(
+                                    onDoubleTap: _fastForward,
+                                    behavior: HitTestBehavior.translucent,
+                                    child: Container(
+                                      color: Colors.transparent,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            // シークインジケーター
+                            if (_showSeekIndicator)
+                              Center(
+                                child: Container(
+                                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black54,
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: Text(
+                                    _seekIndicatorText,
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                   SizedBox(height: 20),
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 20),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            Text(
-                              _formatDuration(_controller!.value.position),
-                              style: TextStyle(color: Colors.white),
-                            ),
-                            Expanded(
-                              child: Slider(
-                                value: _controller!.value.position.inSeconds.toDouble(),
-                                min: 0.0,
-                                max: _controller!.value.duration.inSeconds.toDouble(),
-                                onChanged: (value) {
-                                  _controller!.seekTo(Duration(seconds: value.toInt()));
+                  // コントロールバー
+                  AnimatedOpacity(
+                    opacity: _showControls ? 1.0 : 0.0,
+                    duration: Duration(milliseconds: 300),
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 20),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                _formatDuration(_controller!.value.position),
+                                style: TextStyle(color: Colors.white),
+                              ),
+                              Expanded(
+                                child: Slider(
+                                  value: _controller!.value.position.inSeconds.toDouble(),
+                                  min: 0.0,
+                                  max: _controller!.value.duration.inSeconds.toDouble(),
+                                  onChanged: (value) {
+                                    _controller!.seekTo(Duration(seconds: value.toInt()));
+                                  },
+                                ),
+                              ),
+                              Text(
+                                _formatDuration(_controller!.value.duration),
+                                style: TextStyle(color: Colors.white),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: 20),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              IconButton(
+                                icon: Icon(Icons.replay_10),
+                                color: Colors.white,
+                                iconSize: 40,
+                                onPressed: _rewind,
+                              ),
+                              SizedBox(width: 20),
+                              IconButton(
+                                icon: Icon(
+                                  _isPlaying ? Icons.pause : Icons.play_arrow,
+                                ),
+                                color: Colors.white,
+                                iconSize: 60,
+                                onPressed: () {
+                                  setState(() {
+                                    _isPlaying ? _controller!.pause() : _controller!.play();
+                                  });
                                 },
                               ),
-                            ),
-                            Text(
-                              _formatDuration(_controller!.value.duration),
-                              style: TextStyle(color: Colors.white),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: 20),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            IconButton(
-                              icon: Icon(Icons.replay_10),
-                              color: Colors.white,
-                              iconSize: 40,
-                              onPressed: _rewind,
-                            ),
-                            SizedBox(width: 20),
-                            IconButton(
-                              icon: Icon(
-                                _isPlaying ? Icons.pause : Icons.play_arrow,
+                              SizedBox(width: 20),
+                              IconButton(
+                                icon: Icon(Icons.forward_10),
+                                color: Colors.white,
+                                iconSize: 40,
+                                onPressed: _fastForward,
                               ),
-                              color: Colors.white,
-                              iconSize: 60,
-                              onPressed: () {
-                                setState(() {
-                                  _isPlaying ? _controller!.pause() : _controller!.play();
-                                });
-                              },
-                            ),
-                            SizedBox(width: 20),
-                            IconButton(
-                              icon: Icon(Icons.forward_10),
-                              color: Colors.white,
-                              iconSize: 40,
-                              onPressed: _fastForward,
-                            ),
-                          ],
-                        ),
-                      ],
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
