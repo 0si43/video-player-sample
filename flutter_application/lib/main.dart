@@ -96,14 +96,6 @@ class _VideoListScreenState extends State<VideoListScreen> {
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 16),
                   ),
-                  if (kIsWeb)
-                    Padding(
-                      padding: EdgeInsets.only(top: 10),
-                      child: Text(
-                        '※Web版では動画はメモリ上に保存されます',
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
-                    ),
                 ],
               ),
             )
